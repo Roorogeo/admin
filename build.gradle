@@ -1,0 +1,95 @@
+plugins {
+	// Minecraft 26.1+ is shipped unobfuscated, so the non-remapping Loom plugin is used.
+	id 'net.fabricmc.fabric-loom' version '1.16-SNAPSHOT'
+	// Shadow bundles JDA (and its transitive dependencies) into the mod jar.
+	id 'com.gradleup.shadow' version '8.3.6'
+	id 'java'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+repositories {
+	mavenCentral()
+	maven {
+		name = 'Fabric'
+		url = 'https://maven.fabricmc.net/'
+	}
+}
+
+// Everything in this configuration is relocated/shaded into the final jar.
+configurations {
+	shadowBundle {
+		transitive = true
+	}
+}
+
+dependencies {
+	// Minecraft + Fabric toolchain. No mappings line: 26.1+ is unobfuscated.
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+	// JDA — the Discord gateway client. Opus/audio not needed for a text bot.
+	// gson and slf4j-api are already provided by Minecraft, so they are excluded from the
+	// bundle to avoid duplicate classes on the server classpath.
+	implementation("net.dv8tion:JDA:${project.jda_version}") {
+		exclude module: 'opus-java'
+	}
+	shadowBundle("net.dv8tion:JDA:${project.jda_version}") {
+		exclude module: 'opus-java'
+		exclude group: 'com.google.code.gson', module: 'gson'
+		exclude group: 'org.slf4j', module: 'slf4j-api'
+	}
+}
+
+processResources {
+	inputs.property 'version', project.version
+	filesMatching('fabric.mod.json') {
+		expand 'version': project.version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 21
+}
+
+java {
+	withSourcesJar()
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+}
+
+shadowJar {
+	configurations = [project.configurations.shadowBundle]
+	archiveClassifier = 'dev-shadow'
+	// Relocate bundled libraries so they never clash with other mods on the server.
+	relocate 'net.dv8tion.jda', 'com.roorogeo.discordcmd.shadow.jda'
+	relocate 'com.iwebpp.crypto', 'com.roorogeo.discordcmd.shadow.crypto'
+	relocate 'gnu.trove', 'com.roorogeo.discordcmd.shadow.trove'
+	relocate 'okhttp3', 'com.roorogeo.discordcmd.shadow.okhttp3'
+	relocate 'okio', 'com.roorogeo.discordcmd.shadow.okio'
+	// org.slf4j is NOT relocated: it is provided by Minecraft and shared, so JDA logs through
+	// the server's own logging. com.google.gson is likewise left to Minecraft's copy.
+	relocate 'com.neovisionaries.ws', 'com.roorogeo.discordcmd.shadow.nv_websocket'
+	mergeServiceFiles()
+}
+
+// On 26.1+ Loom no longer remaps, so the plain `jar` is the distributable jar.
+// Feed it the shaded classes produced by shadowJar.
+jar {
+	dependsOn shadowJar
+	from(zipTree(tasks.shadowJar.archiveFile)) {
+		exclude 'META-INF/*.SF'
+		exclude 'META-INF/*.DSA'
+		exclude 'META-INF/*.RSA'
+	}
+
+	from('LICENSE') {
+		rename { "${it}_${project.base.archivesName.get()}" }
+	}
+}
